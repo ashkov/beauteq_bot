@@ -66,7 +66,7 @@ class BeauteqBot:
         self.db.save_user(user.id, user.username, user.first_name)
         self.db.save_conversation(user.id, user_message, False, "message")
 
-        # Показываем typing indicator
+        # Показываем индикатор "печатает"
         await update.message.chat.send_action(action="typing")
 
         try:
@@ -124,6 +124,9 @@ class BeauteqBot:
 
     async def show_services(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать услуги и цены"""
+        # Показываем индикатор загрузки
+        await update.message.chat.send_action(action="typing")
+
         services = self.db.get_services()
 
         services_text = "💇 *Наши услуги и цены:*\n\n"
@@ -134,6 +137,9 @@ class BeauteqBot:
 
     async def show_masters(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать мастеров"""
+        # Показываем индикатор загрузки
+        await update.message.chat.send_action(action="typing")
+
         masters = self.db.get_available_masters()
 
         masters_text = "👩‍💼 *Наши мастера:*\n\n"
@@ -144,6 +150,9 @@ class BeauteqBot:
 
     async def show_my_appointments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать записи пользователя"""
+        # Показываем индикатор загрузки
+        await update.message.chat.send_action(action="typing")
+
         user = update.effective_user
         appointments = self.db.get_user_appointments(user.id)
 
