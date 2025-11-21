@@ -5,6 +5,7 @@ from config import config
 from database import Database
 from booking_system import BookingSystem
 from ollama_client import OllamaClient
+from message_processor import MessageProcessor
 import json
 
 # Настройка логирования
@@ -62,65 +63,25 @@ class BeauteqBot:
         user = update.effective_user
         user_message = update.message.text
 
-        # Сохраняем сообщение пользователя
-        self.db.save_user(user.id, user.username, user.first_name)
-        self.db.save_conversation(user.id, user_message, False, "message")
-
         # Показываем индикатор "печатает"
         await update.message.chat.send_action(action="typing")
 
-        try:
-            # Определяем тип запроса
-            if any(word in user_message.lower() for word in ['записаться', 'запись', 'бронь']):
-                # Обработка бронирования
-                response = self.booking_system.process_booking_request(
-                    user_message, user.id, user.first_name
-                )
-            else:
-                # Общий диалог
-                response = self.llm.chat([
-                    {"role": "user", "content": user_message}
-                ])
+        # Создаем процессор сообщений
+        processor = MessageProcessor()
 
-            # Отправляем ответ
-            if "text" in response:
-                await update.message.reply_text(response["text"])
-                self.db.save_conversation(user.id, response["text"], True, "response")
+        # Обрабатываем сообщение
+        response = await processor.process_message(
+            user.id,
+            user.first_name,
+            user_message
+        )
 
-            # Обрабатываем результаты функций
-            elif response.get("type") == "function_result":
-                result = response["result"]
-
-                if response["function"] == "create_appointment":
-                    if result.get("success"):
-                        appointment_text = f"""
-✅ *Запись успешно создана!*
-
-*Мастер:* {result['master']}
-*Услуга:* {result['service']}  
-*Дата:* {result['date']}
-*Время:* {result['time']}
-*Стоимость:* {result['price']} руб.
-
-Ждем вас в салоне Beauteq! 🎉
-                        """
-                        await update.message.reply_text(appointment_text, parse_mode='Markdown')
-                        self.db.save_conversation(user.id, appointment_text, True, "appointment_created")
-                    else:
-                        error_text = f"❌ Не удалось создать запись: {result.get('error', 'Неизвестная ошибка')}"
-                        await update.message.reply_text(error_text)
-                        self.db.save_conversation(user.id, error_text, True, "appointment_error")
-
-                else:
-                    # Для других функций просто показываем результат
-                    result_text = json.dumps(result, ensure_ascii=False, indent=2)
-                    await update.message.reply_text(f"Результат: {result_text}")
-
-        except Exception as e:
-            logger.error(f"Error handling message: {e}")
-            error_text = "Извините, произошла ошибка. Пожалуйста, попробуйте позже."
-            await update.message.reply_text(error_text)
-            self.db.save_conversation(user.id, error_text, True, "error")
+        # Отправляем ответ
+        if response.get("type") == "text":
+            await update.message.reply_text(
+                response["text"],
+                parse_mode='Markdown' if '*' in response["text"] else None
+            )
 
     async def show_services(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать услуги и цены"""

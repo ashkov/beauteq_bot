@@ -1,7 +1,10 @@
-import requests
 import json
 import logging
-from typing import Dict, List, Optional, Any
+import re
+from typing import Dict, List, Any
+
+import requests
+
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -13,16 +16,21 @@ class OllamaClient:
         self.model = config.OLLAMA_MODEL
 
     def chat(self, messages: List[Dict], tools: List[Dict] = None) -> Dict[str, Any]:
-        """Основной метод общения с Ollama"""
+        """Основной метод общения с Ollama с поддержкой function calling"""
 
-        formatted_messages = self._format_messages(messages, tools)
+        # Форматируем системный промпт с функциями
+        system_prompt = self._build_system_prompt(tools)
+
+        # Собираем все сообщения включая системный промпт
+        all_messages = [{"role": "system", "content": system_prompt}]
+        all_messages.extend(messages)
 
         try:
             response = requests.post(
-                f"{self.base_url}/api/generate",
+                f"{self.base_url}/api/chat",
                 json={
                     "model": self.model,
-                    "prompt": formatted_messages,
+                    "messages": all_messages,
                     "stream": False,
                     "options": {
                         "temperature": 0.1,
@@ -30,82 +38,149 @@ class OllamaClient:
                         "top_p": 0.9
                     }
                 },
-                timeout=60
+                timeout=200
             )
 
             if response.status_code == 200:
                 result = response.json()
-                return self._parse_response(result["response"])
+                message_content = result["message"]["content"]
+                return self._parse_response(message_content)
             else:
                 logger.error(f"Ollama API error: {response.status_code}")
-                return {"error": "Извините, возникла техническая ошибка. Попробуйте позже."}
+                return {"type": "text", "text": "Извините, возникла техническая ошибка. Попробуйте позже."}
 
         except requests.exceptions.ConnectionError:
             logger.error("Cannot connect to Ollama")
-            return {"error": "Сервис временно недоступен. Пожалуйста, попробуйте позже."}
+            return {"type": "text", "text": "Сервис временно недоступен. Пожалуйста, попробуйте позже."}
         except Exception as e:
             logger.error(f"Exception in Ollama chat: {str(e)}")
-            return {"error": "Внутренняя ошибка ассистента"}
+            return {"type": "text", "text": "Внутренняя ошибка ассистента"}
 
-    def _format_messages(self, messages: List[Dict], tools: List[Dict] = None) -> str:
-        """Форматируем сообщения в промпт для Ollama"""
+    def _build_system_prompt(self, tools: List[Dict] = None) -> str:
+        """Строим системный промпт с четкими инструкциями по выбору одной функции"""
 
-        prompt_parts = [f"Системная инструкция: {config.SYSTEM_PROMPT}\n\n"]
+        from datetime import datetime, timedelta
 
-        for msg in messages:
-            if msg["role"] == "system":
-                prompt_parts.append(f"Дополнительная инструкция: {msg['content']}\n")
-            elif msg["role"] == "user":
-                prompt_parts.append(f"Клиент: {msg['content']}\n")
-            elif msg["role"] == "assistant":
-                prompt_parts.append(f"Ты: {msg['content']}\n")
+        # Текущая дата для примеров
+        today = datetime.now()
+        tomorrow = today + timedelta(days=1)
 
-        if tools:
-            prompt_parts.append("\n\nДОСТУПНЫЕ ФУНКЦИИ:")
-            for tool in tools:
-                prompt_parts.append(f"- {tool['name']}: {tool['description']}")
-                if 'parameters' in tool:
-                    params = json.dumps(tool['parameters'], ensure_ascii=False, indent=2)
-                    prompt_parts.append(f"  Параметры: {params}")
+        prompt = f"""
+    {config.SYSTEM_PROMPT}
 
-            prompt_parts.append("""
-ФОРМАТ ОТВЕТА:
-Если нужно использовать функцию, ответь ТОЛЬКО в формате JSON:
-<FUNCTION_CALL>
-{
-    "function": "имя_функции",
-    "parameters": {
-        "param1": "value1",
-        "param2": "value2"
+    ДОСТУПНЫЕ МАСТЕРА (используй ТОЛЬКО эти имена):
+    - "Анна Ребикова" - Парикмахер-стилист
+    - "Мария Иванова" - Косметолог  
+    - "Елена Петрова" - Мастер маникюра
+    - "Светлана Сидорова" - Визажист
+
+    ДОСТУПНЫЕ УСЛУГИ (используй ТОЛЬКО эти названия):
+    - "Стрижка женская", "Стрижка мужская", "Окрашивание" - Парикмахерские
+    - "Чистка лица", "Пилинг" - Косметология
+    - "Маникюр классический", "Покрытие гель-лак" - Ногтевой сервис  
+    - "Вечерний макияж" - Визаж
+
+    ДОСТУПНЫЕ ФУНКЦИИ (ВЫБЕРИ ТОЛЬКО ОДНУ):
+
+    1. get_available_masters - показать мастеров по специализации
+       Используй, когда: пользователь спрашивает "кто есть?", "какие мастера?", "к кому записаться?"
+
+    2. get_services - показать услуги и цены  
+       Используй, когда: пользователь спрашивает "что делаете?", "какие услуги?", "сколько стоит?"
+
+    3. check_availability - проверить свободное время
+       Используй, когда: пользователь УЖЕ выбрал мастера, услугу, дату и время
+
+    4. create_appointment - создать запись
+       Используй, когда: пользователь УЖЕ выбрал ВСЕ параметры (мастер, услуга, дата, время)
+
+    ВАЖНЫЕ ПРАВИЛА ВЫБОРА ФУНКЦИИ:
+    - В ОДНОМ ответе ТОЛЬКО ОДНА функция
+    - Если информации недостаточно - задай уточняющий вопрос текстом
+    - Не показывай все функции сразу!
+
+    ПРИМЕРЫ ПРАВИЛЬНЫХ ОТВЕТОВ:
+
+    Запрос: "К кому можно записаться?"
+    → ТОЛЬКО get_available_masters
+
+    Запрос: "Какие услуги у вас есть?"
+    → ТОЛЬКО get_services  
+
+    Запрос: "Хочу записаться к парикмахеру"
+    → ТОЛЬКО get_available_masters (специализация: "парикмахер")
+
+    Запрос: "Сколько стоит стрижка?"
+    → ТОЛЬКО get_services (категория: "Парикмахерские")
+
+    Запрос: "Свободна ли Анна Ребикова завтра в 15:00?"
+    → ТОЛЬКО check_availability
+
+    Запрос: "Запишите меня к Анне на стрижку завтра в 15:00"
+    → ТОЛЬКО create_appointment (только если ВСЕ данные есть)
+
+    Запрос: "Хочу записаться" (без деталей)
+    → Текстовый ответ: "К какому мастеру вы хотите записаться? У нас есть..."
+
+    ФОРМАТЫ ДАННЫХ:
+    - Дата: ГГГГ-ММ-ДД (сегодня: {today.strftime('%Y-%m-%d')}, завтра: {tomorrow.strftime('%Y-%m-%d')})
+    - Время: ЧЧ:ММ
+    - Специализация: "парикмахер", "косметолог", "маникюр", "визажист"
+    - Категория: "Парикмахерские", "Косметология", "Ногтевой сервис", "Визаж"
+    """
+
+        prompt += """
+
+    ФОРМАТ ОТВЕТА:
+    Если нужно вызвать функцию, отвечай ТОЛЬКО в формате:
+    <function_call>
+    {
+        "function": "имя_функции",
+        "parameters": {
+            "param1": "value1"
+        }
     }
-}
-</FUNCTION_CALL>
+    </function_call>
 
-Иначе отвечай обычным текстом.
-""")
+    Если информации недостаточно - отведи обычным текстом и спроси нужные детали.
 
-        return "\n".join(prompt_parts)
+    НИКОГДА не показывай все функции сразу!
+    НИКОГДА не показывай клиенту формат вызова функций!
+    """
+        return prompt
 
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
-        """Парсим ответ от LLM, извлекаем function calls"""
+        """Парсим ответ и извлекаем function calls"""
 
-        if "<FUNCTION_CALL>" in response_text and "</FUNCTION_CALL>" in response_text:
+        # Очищаем текст от лишних пробелов
+        response_text = response_text.strip()
+        logger.info(response_text)
+
+        # Пытаемся найти function call
+        function_call_match = re.search(
+            r'<function_call>(.*?)</function_call>',
+            response_text,
+            re.DOTALL
+        )
+
+        if function_call_match:
             try:
-                start = response_text.find("<FUNCTION_CALL>") + len("<FUNCTION_CALL>")
-                end = response_text.find("</FUNCTION_CALL>")
-                json_str = response_text[start:end].strip()
-
+                json_str = function_call_match.group(1).strip()
                 function_data = json.loads(json_str)
+
+                # Логируем для отладки
+                logger.info(f"Parsed function call: {function_data}")
+
                 return {
                     "type": "function_call",
                     "function": function_data.get("function"),
-                    "parameters": function_data.get("parameters", {}),
-                    "text": response_text
+                    "parameters": function_data.get("parameters", {})
                 }
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse function call: {e}")
+                logger.error(f"Failed to parse function call JSON: {e}")
+                logger.error(f"Raw JSON string: {json_str}")
+                # Если не удалось распарсить, возвращаем как текст
+                return {"type": "text", "text": response_text}
 
-        return {
-            "type": "text",
-            "text": response_text.strip()
-        }
+        # Если function call не найден, возвращаем как текст
+        return {"type": "text", "text": response_text}

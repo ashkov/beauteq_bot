@@ -1,14 +1,12 @@
-import sqlite3
-import json
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
 import logging
+import sqlite3
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
-    def __init__(self, db_path: str = "beauteq.db"):
+    def __init__(self, db_path: str = "data/beauteq.db"):
         self.db_path = db_path
         self._init_db()
 
@@ -32,7 +30,8 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     specialization TEXT NOT NULL,
-                    is_active BOOLEAN DEFAULT 1
+                    is_active BOOLEAN DEFAULT 1,
+                    UNIQUE(name, specialization) 
                 )
             """)
 
@@ -43,7 +42,8 @@ class Database:
                     name TEXT NOT NULL,
                     category TEXT NOT NULL,
                     duration_minutes INTEGER,
-                    price DECIMAL(10,2)
+                    price DECIMAL(10,2),
+                    UNIQUE(name, category)  
                 )
             """)
 
@@ -74,6 +74,7 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # ... остальные таблицы ...
 
             # Наполняем начальными данными
             self._seed_initial_data(conn)
@@ -82,7 +83,7 @@ class Database:
 
     def _seed_initial_data(self, conn):
         """Начальные данные салона"""
-        # Мастера
+        # Мастера - используем INSERT OR IGNORE
         masters = [
             ("Анна Ребикова", "Парикмахер-стилист"),
             ("Мария Иванова", "Косметолог"),
@@ -91,11 +92,11 @@ class Database:
         ]
 
         conn.executemany(
-            "INSERT OR IGNORE INTO masters (name, specialization) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO masters (name, specialization) VALUES (?, ?)",  # ← ИЗМЕНЕНО
             masters
         )
 
-        # Услуги
+        # Услуги - используем INSERT OR IGNORE
         services = [
             ("Стрижка женская", "Парикмахерские", 60, 2000),
             ("Стрижка мужская", "Парикмахерские", 30, 1000),
@@ -109,6 +110,7 @@ class Database:
 
         conn.executemany(
             "INSERT OR IGNORE INTO services (name, category, duration_minutes, price) VALUES (?, ?, ?, ?)",
+            # ← ИЗМЕНЕНО
             services
         )
 
@@ -129,18 +131,56 @@ class Database:
             )
 
     def get_available_masters(self, specialization: str = None) -> List[Dict]:
-        """Получить список мастеров"""
+        """Получить список мастеров с улучшенным поиском"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
+
             if specialization:
-                cursor = conn.execute(
-                    "SELECT * FROM masters WHERE specialization LIKE ? AND is_active = 1",
-                    (f'%{specialization}%',)
-                )
+                # Нормализуем ввод
+                specialization = specialization.strip().lower()
+
+                # Сопоставление синонимов с реальными специализациями
+                specialization_mapping = {
+                    'парикмахер': 'Парикмахер-стилист',
+                    'стилист': 'Парикмахер-стилист',
+                    'волосы': 'Парикмахер-стилист',
+                    'стрижка': 'Парикмахер-стилист',
+                    'окрашивание': 'Парикмахер-стилист',
+                    'косметолог': 'Косметолог',
+                    'кожа': 'Косметолог',
+                    'чистка': 'Косметолог',
+                    'пилинг': 'Косметолог',
+                    'маникюр': 'Мастер маникюра',
+                    'ногти': 'Мастер маникюра',
+                    'гель-лак': 'Мастер маникюра',
+                    'визажист': 'Визажист',
+                    'макияж': 'Визажист',
+                    'макияж': 'Визажист'
+                }
+
+                # Ищем соответствие
+                matched_specialization = None
+                for keyword, real_specialization in specialization_mapping.items():
+                    if keyword in specialization:
+                        matched_specialization = real_specialization
+                        break
+
+                if matched_specialization:
+                    cursor = conn.execute(
+                        "SELECT * FROM masters WHERE specialization = ? AND is_active = 1",
+                        (matched_specialization,)
+                    )
+                else:
+                    # Если не нашли по ключевым словам, ищем точное совпадение
+                    cursor = conn.execute(
+                        "SELECT * FROM masters WHERE specialization = ? AND is_active = 1",
+                        (specialization.title(),)  # Приводим к нормальному виду
+                    )
             else:
                 cursor = conn.execute("SELECT * FROM masters WHERE is_active = 1")
 
-            return [dict(row) for row in cursor.fetchall()]
+            results = [dict(row) for row in cursor.fetchall()]
+            return results
 
     def get_services(self, category: str = None) -> List[Dict]:
         """Получить список услуг"""

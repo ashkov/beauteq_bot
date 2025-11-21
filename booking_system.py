@@ -22,7 +22,7 @@ class BookingSystem:
             },
             {
                 "name": "get_services",
-                "description": "Получить список услуг по категории",
+                "description": "Получить список услуг по категории", 
                 "parameters": {
                     "category": "категория услуг (парикмахерские, косметология, ногтевой сервис, визаж)"
                 }
@@ -32,28 +32,28 @@ class BookingSystem:
                 "description": "Проверить доступность мастера на определенную дату и время",
                 "parameters": {
                     "master_name": "имя мастера",
-                    "date": "дата в формате ГГГГ-ММ-ДД",
-                    "time": "время в формате ЧЧ:ММ"
+                    "date": "дата в формате ГГГГ-ММ-ДД (например: 2024-01-15)",
+                    "time": "время в формате ЧЧ:ММ (например: 14:30)"
                 }
             },
             {
-                "name": "create_appointment",
+                "name": "create_appointment", 
                 "description": "Создать запись к мастеру",
                 "parameters": {
                     "master_name": "имя мастера",
                     "service_name": "название услуги",
-                    "date": "дата в формате ГГГГ-ММ-ДД",
-                    "time": "время в формате ЧЧ:ММ",
+                    "date": "дата в формате ГГГГ-ММ-ДД (например: 2024-01-15)", 
+                    "time": "время в формате ЧЧ:ММ (например: 14:30)",
                     "client_name": "имя клиента"
                 }
             }
         ]
 
-    def get_available_masters(self, specialization: str) -> List[Dict]:
+    def get_available_masters(self, specialization: str = None) -> List[Dict]:
         """Получить мастеров по специализации"""
         return self.db.get_available_masters(specialization)
 
-    def get_services(self, category: str) -> List[Dict]:
+    def get_services(self, category: str = None) -> List[Dict]:
         """Получить услуги по категории"""
         return self.db.get_services(category)
 
@@ -74,7 +74,7 @@ class BookingSystem:
 
             return {
                 "available": is_available,
-                "reason": "Свободно" if is_available else "Занято",
+                "reason": "Свободно" if is_available else "Занято", 
                 "master": master['name']
             }
 
@@ -112,7 +112,7 @@ class BookingSystem:
             return {
                 "success": True,
                 "appointment_id": appointment_id,
-                "master": master['name'],
+                "master": master['name'], 
                 "service": service['name'],
                 "date": date,
                 "time": time,
@@ -138,46 +138,6 @@ class BookingSystem:
             return False
 
     def process_booking_request(self, user_message: str, user_id: int, user_name: str) -> Dict:
-        """Обработать запрос на бронирование"""
-        messages = [
-            {
-                "role": "system",
-                "content": "Ты специалист по записи в салон красоты Beauteq. Помоги клиенту записаться, уточни все детали: мастер, услуга, дата, время."
-            },
-            {
-                "role": "user",
-                "content": user_message
-            }
-        ]
-
-        response = self.llm.chat(messages, self.available_functions)
-
-        if response.get("type") == "function_call":
-            # Выполняем вызов функции
-            function_name = response["function"]
-            parameters = response["parameters"]
-
-            # Добавляем имя клиента и user_id для создания записи
-            if function_name == "create_appointment" and "client_name" not in parameters:
-                parameters["client_name"] = user_name
-                parameters["user_id"] = user_id
-
-            if function_name == "get_available_masters":
-                result = self.get_available_masters(**parameters)
-            elif function_name == "get_services":
-                result = self.get_services(**parameters)
-            elif function_name == "check_availability":
-                result = self.check_availability(**parameters)
-            elif function_name == "create_appointment":
-                result = self.create_appointment(**parameters)
-            else:
-                result = {"error": f"Неизвестная функция: {function_name}"}
-
-            return {
-                "type": "function_result",
-                "function": function_name,
-                "result": result,
-                "original_response": response
-            }
-
-        return response
+        """Обработать запрос на бронирование - просто передаем в LLM"""
+        messages = [{"role": "user", "content": user_message}]
+        return self.llm.chat(messages, self.available_functions)
