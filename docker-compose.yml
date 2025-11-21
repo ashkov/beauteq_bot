@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  beauteq-bot:
+    build: .
+    container_name: beauteq-bot
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Для доступа к хосту
+    restart: unless-stopped

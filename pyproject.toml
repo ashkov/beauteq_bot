@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "beauteq-bot"
+version = "1.0.0"
+description = "AI Assistant for Beauty Salon - Telegram Bot"
+authors = ["Beauteq Team <hello@beauteq.com>"]
+readme = "README.md"
+packages = [{include = "beauteq_bot"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+python-telegram-bot = "^22.5"
+requests = "^2.31.0"
+#sentence-transformers = "^5.1.2"
+#chromadb = "^1.3.5"
+python-dateutil = "^2.8.2"
+pydantic = "^2.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+black = "^23.0.0"
+flake8 = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
