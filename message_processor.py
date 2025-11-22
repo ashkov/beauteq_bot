@@ -102,7 +102,7 @@ class MessageProcessor:
                 rendered_result = self.view_router.render_view(view_name, raw_result)
 
                 # Сохраняем в историю
-                self._update_conversation_context(user_id, response.get("text", ""), rendered_result)
+                self._update_conversation_context(user_id, response.get("text", "") + rendered_result)
                 self.db.save_conversation(user_id, rendered_result, True, "view_response")
 
                 return {"type": "text", "text": rendered_result}
