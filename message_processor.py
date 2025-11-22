@@ -1,11 +1,16 @@
 import logging
+from datetime import datetime
 from typing import Dict, Any, List
+
+import pytz
 
 from database import Database
 from ollama_client import OllamaClient
-from state_machine import StateMachine, BotState
 from simple_rag import SimpleRAG
+
 logger = logging.getLogger(__name__)
+
+from view_router import ViewRouter
 
 
 class MessageProcessor:
@@ -13,297 +18,115 @@ class MessageProcessor:
         self.db = Database()
         self.llm = OllamaClient()
         self.rag = SimpleRAG()
-        self.state_machine = StateMachine()
+        self.view_router = ViewRouter(self.db)
+        self.conversation_context = {}  # Только для контекста диалога
 
     async def process_message(self, user_id: int, user_name: str, user_message: str) -> Dict[str, Any]:
-        self.db.save_conversation(user_id, user_message, False, "message")
+        # self.db.save_conversation(user_id, user_message, False, "message")
 
-        # 1. Пробуем State Machine
-        state_result = self.state_machine.process_message(user_id, user_message, self.db)
-
-        if state_result.get("handled"):
-            logger.info(f"State machine handled message for user {user_id}")
-            self.db.save_conversation(user_id, state_result["text"], True, "state_response")
-            return {"type": "text", "text": state_result["text"]}
-
-        # 2. Если не обработано State Machine - используем RAG + LLM
-        logger.info(f"Using RAG+LLM for user {user_id}")
+        # 1. Получаем релевантные знания из RAG
         rag_results = self.rag.search(user_message)
-        messages = self._build_messages(user_id, user_message, rag_results)
-        response = self.llm.chat(messages, self.llm.available_functions)
 
-        if response.get("type") == "text":
-            self.db.save_conversation(user_id, response["text"], True, "response")
+        # 2. Строим богатый контекст для LLM
+        messages = self._build_rich_context(user_id, user_name, user_message, rag_results)
+        logger.info(messages)
+        # 3. Передаем ВСЕ доступные View в LLM
+        available_views = self.view_router.get_available_views()
+        response = self.llm.chat(messages, available_views)
 
-        return response
+        # 4. Обрабатываем ответ LLM
+        return await self._handle_llm_response(user_id, user_name, response)
 
-    def _build_messages(self, user_id: int, user_message: str, rag_results: List[str]) -> List[Dict]:
-        """Строим сообщения с знаниями из RAG"""
+    def _build_rich_context(self, user_id: int, user_name: str, user_message: str, rag_results: List[str]) -> List[
+        Dict]:
+        """Строит богатый контекст для LLM"""
         messages = []
 
-        # Добавляем знания из RAG если есть
-        if rag_results:
-            knowledge_text = "📚 Информация для ответа:\n" + "\n".join(f"• {item}" for item in rag_results)
-            messages.append({"role": "system", "content": knowledge_text})
+        # Добавляем историю диалога
+        if not user_id in self.conversation_context:
+            self.conversation_context[user_id] = self.db.load_conversation(user_id)
+        if user_id in self.conversation_context:
+            messages.extend(self.conversation_context[user_id][-12:])  # 3 пары вопрос-ответ
 
+        # Системный промпт с информацией о пользователе и салоне
+        system_prompt = self._build_system_prompt(user_name, rag_results)
+        messages.append({"role": "system", "content": system_prompt})
+        # Текущее сообщение пользователя
         messages.append({"role": "user", "content": user_message})
+        self.conversation_context[user_id].extend(
+            [{"role": "user", "content": user_message}]
+        )
         return messages
-    def _format_function_result(self, function_name: str, result: Any, user_id: int) -> Dict[str, Any]:
-        """Форматирует результат функции для пользователя"""
 
-        if function_name == "get_available_masters":
-            if result:
-                masters_text = "👩‍💼 *Доступные мастера:*\n\n"
-                for master in result:
-                    masters_text += f"*{master['name']}* - {master['specialization']}\n"
-                self.db.save_conversation(user_id, masters_text, True, "masters_list")
-                return {"type": "text", "text": masters_text}
-            else:
-                text = "К сожалению, сейчас нет доступных мастеров."
-                self.db.save_conversation(user_id, text, True, "masters_list")
-                return {"type": "text", "text": text}
+    def _build_system_prompt(self, user_name: str, rag_results: List[str]) -> str:
+        """Строит системный промпт с полной информацией"""
+        # Знания из RAG
+        rag_text = ""
+        if rag_results:
+            rag_text = "📚 *Дополнительная информация:*\n" + "\n".join(rag_results)
 
-        elif function_name == "get_services":
-            if result:
-                services_text = "💇 *Наши услуги и цены:*\n\n"
-                for service in result:
-                    services_text += f"*{service['name']}* - {service['price']} руб. ({service['duration_minutes']} мин.)\n"
-                self.db.save_conversation(user_id, services_text, True, "services_list")
-                return {"type": "text", "text": services_text}
-            else:
-                text = "К сожалению, услуги не найдены."
-                self.db.save_conversation(user_id, text, True, "services_list")
-                return {"type": "text", "text": text}
+        months_ru = [
+            '', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+            'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+        ]
 
-        elif function_name == "check_availability":
-            if result.get("available"):
-                text = f"✅ {result['master']} свободен в это время!"
-            else:
-                text = f"❌ {result['reason']}"
-            self.db.save_conversation(user_id, text, True, "availability_check")
-            return {"type": "text", "text": text}
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        moscow_time = datetime.now(moscow_tz)
+        return f"""
+        
+{rag_text}
 
-        elif function_name == "create_appointment":
-            if result.get("success"):
-                appointment_text = f"""
-✅ *Запись успешно создана!*
+Пользователь: {user_name}. Но может себя называть другим именем. Используй то имя, которое он себе взял в диалоге.
 
-*Мастер:* {result['master']}
-*Услуга:* {result['service']}  
-*Дата:* {result['date']}
-*Время:* {result['time']}
-*Стоимость:* {result['price']} руб.
+Сейчас: {moscow_time.day} {months_ru[moscow_time.month]} {moscow_time.year} года, {moscow_time.strftime('%H:%M')}, по Москве.
+Нельзя записывать на более ранние время и даты, так как это время уже прошло.
+"""
 
-Ждем вас в салоне Beauteq! 🎉
-                """
-                self.db.save_conversation(user_id, appointment_text, True, "appointment_created")
-                return {"type": "text", "text": appointment_text}
-            else:
-                error_text = f"❌ Не удалось создать запись: {result.get('error', 'Неизвестная ошибка')}"
-                self.db.save_conversation(user_id, error_text, True, "appointment_error")
+    async def _handle_llm_response(self, user_id: int, user_name: str, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Обрабатывает ответ от LLM"""
+
+        # Если LLM хочет вызвать View
+        if response.get("type") == "function_call":
+            view_name = response["function"]
+            parameters = response["parameters"]
+
+            # Автоматически добавляем user_id где нужно
+            if view_name in ["user_appointments", "create_appointment"]:
+                parameters["user_id"] = user_id
+
+            try:
+                # Выполняем View
+                raw_result = self.view_router.execute_view(view_name, parameters)
+                # Рендерим результат
+                rendered_result = self.view_router.render_view(view_name, raw_result)
+
+                # Сохраняем в историю
+                self._update_conversation_context(user_id, response.get("text", ""), rendered_result)
+                self.db.save_conversation(user_id, rendered_result, True, "view_response")
+
+                return {"type": "text", "text": rendered_result}
+
+            except Exception as e:
+                error_text = f"❌ Ошибка: {str(e)}"
+                self.db.save_conversation(user_id, error_text, True, "error")
                 return {"type": "text", "text": error_text}
 
-        # Для других функций возвращаем как есть
-        return {"type": "text", "text": str(result)}
-
-    async def _process_booking_message(self, user_id: int, user_name: str, user_message: str) -> Dict[str, Any]:
-        """Обработка сообщений, связанных с бронированием"""
-
-        # Получаем ответ от LLM
-        messages = [{"role": "user", "content": user_message}]
-        response = self.llm.chat(messages, self.booking_system.available_functions)
-
-        # Логируем ответ для отладки
-        logger.info(f"LLM response for '{user_message}': {response}")
-
-        # Если LLM хочет вызвать функцию - выполняем её
-        if response.get("type") == "function_call":
-            return await self._execute_function_call(
-                response["function"],
-                response["parameters"],
-                user_id,
-                user_name
-            )
+        # Обычный текстовый ответ
         else:
-            # Просто возвращаем текстовый ответ
+            self._update_conversation_context(user_id, response.get("text", ""))
             self.db.save_conversation(user_id, response["text"], True, "response")
             return response
 
-    async def _execute_function_call(self, function_name: str, parameters: Dict,
-                                     user_id: int, user_name: str) -> Dict[str, Any]:
-        """Выполняет вызов функции и возвращает результат"""
+    def _update_conversation_context(self, user_id: int, bot_response: str):
+        """Обновляет контекст диалога"""
+        if user_id not in self.conversation_context:
+            self.conversation_context[user_id] = self.db.load_conversation(user_id)
 
-        logger.info(f"Executing function: {function_name} with params: {parameters}")
+        # Добавляем пару вопрос-ответ
+        self.conversation_context[user_id].extend([
+            {"role": "assistant", "content": bot_response}
+        ])
 
-        try:
-            # Для create_appointment добавляем user_id и исправляем client_name
-            if function_name == "create_appointment":
-                if "client_name" in parameters and parameters["client_name"].strip().lower() in ["me", "я", "myself",
-                                                                                                 "меня"]:
-                    parameters["client_name"] = user_name
-                parameters["user_id"] = user_id
-
-            if function_name == "get_available_masters":
-                specialization = parameters.get("specialization", "")
-                result = self.booking_system.get_available_masters(specialization)
-
-                if result:
-                    masters_text = "👩‍💼 *Доступные мастера:*\n\n"
-                    for master in result:
-                        masters_text += f"*{master['name']}* - {master['specialization']}\n"
-
-                    self.db.save_conversation(user_id, masters_text, True, "masters_list")
-                    return {"type": "text", "text": masters_text}
-                else:
-                    text = "К сожалению, сейчас нет доступных мастеров по этой специализации."
-                    self.db.save_conversation(user_id, text, True, "masters_list")
-                    return {"type": "text", "text": text}
-
-            elif function_name == "get_services":
-                category = parameters.get("category", "")
-                result = self.booking_system.get_services(category)
-
-                if result:
-                    services_text = "💇 *Наши услуги и цены:*\n\n"
-                    for service in result:
-                        services_text += f"*{service['name']}* - {service['price']} руб. ({service['duration_minutes']} мин.)\n"
-
-                    self.db.save_conversation(user_id, services_text, True, "services_list")
-                    return {"type": "text", "text": services_text}
-                else:
-                    text = "К сожалению, услуги по этой категории не найдены."
-                    self.db.save_conversation(user_id, text, True, "services_list")
-                    return {"type": "text", "text": text}
-
-            elif function_name == "check_availability":
-                result = self.booking_system.check_availability(**parameters)
-
-                if result.get("available"):
-                    text = f"✅ {result['master']} свободен в это время!"
-                else:
-                    text = f"❌ {result['reason']}"
-
-                self.db.save_conversation(user_id, text, True, "availability_check")
-                return {"type": "text", "text": text}
-
-            elif function_name == "create_appointment":
-                result = self.booking_system.create_appointment(**parameters)
-
-                if result.get("success"):
-                    appointment_text = f"""
-    ✅ *Запись успешно создана!*
-
-    *Мастер:* {result['master']}
-    *Услуга:* {result['service']}  
-    *Дата:* {result['date']}
-    *Время:* {result['time']}
-    *Стоимость:* {result['price']} руб.
-
-    💡 Пожалуйста, приходите за 10 минут до записи.
-
-    Ждем вас в салоне Beauteq! 🎉
-                    """
-                    self.db.save_conversation(user_id, appointment_text, True, "appointment_created")
-                    return {"type": "text", "text": appointment_text}
-                else:
-                    error_text = f"❌ Не удалось создать запись: {result.get('error', 'Неизвестная ошибка')}"
-                    self.db.save_conversation(user_id, error_text, True, "appointment_error")
-                    return {"type": "text", "text": error_text}
-
-            else:
-                text = f"Неизвестная функция: {function_name}"
-                self.db.save_conversation(user_id, text, True, "error")
-                return {"type": "text", "text": text}
-
-        except Exception as e:
-            logger.error(f"Error executing function {function_name}: {e}")
-            error_text = "Извините, произошла ошибка при обработке запроса."
-            self.db.save_conversation(user_id, error_text, True, "error")
-            return {"type": "text", "text": error_text}
-
-    async def _validate_appointment_params(self, params: Dict, user_name: str) -> Dict:
-        """Валидация параметров записи"""
-
-        # Исправляем имя клиента
-        if "client_name" in params and params["client_name"].strip().lower() in ["me", "я", "myself", "меня"]:
-            params["client_name"] = user_name
-
-        # Проверяем дату
-        date = params.get("date", "").strip()
-        if not date or date.lower() in ["today()", "now()", "сегодня", "завтра", "today", "now"]:
-            suggestion = await self._suggest_datetime_format()
-            return {
-                "error": f"❌ Пожалуйста, укажите конкретную дату в формате ГГГГ-ММ-ДД.\n\n{suggestion}"
-            }
-
-        # Проверяем время
-        time = params.get("time", "").strip()
-        if not time or time.lower() in ["now()", "сейчас", "now"]:
-            suggestion = await self._suggest_datetime_format()
-            return {
-                "error": f"❌ Пожалуйста, укажите конкретное время в формате ЧЧ:ММ.\n\n{suggestion}"
-            }
-
-        # Проверяем мастера
-        master_name = params.get("master_name", "").strip()
-        available_masters = self.booking_system.get_available_masters()
-        master_names = [m["name"] for m in available_masters]
-
-        # Исправляем опечатки в имени мастера
-        corrected_master = None
-        for master in master_names:
-            if master_name.lower() in master.lower() or master.lower() in master_name.lower():
-                corrected_master = master
-                break
-
-        if not corrected_master:
-            masters_list = "\n".join([f"• {m}" for m in master_names])
-            return {
-                "error": f"❌ Мастер '{master_name}' не найден. Доступные мастера:\n{masters_list}"
-            }
-
-        params["master_name"] = corrected_master
-
-        # Проверяем услугу
-        service_name = params.get("service_name", "").strip()
-        available_services = self.booking_system.get_services()
-        service_names = [s["name"] for s in available_services]
-
-        # Исправляем опечатки в услуге
-        corrected_service = None
-        for service in service_names:
-            if service_name.lower() in service.lower() or service.lower() in service_name.lower():
-                corrected_service = service
-                break
-
-        if not corrected_service:
-            services_list = "\n".join([f"• {s}" for s in service_names])
-            return {
-                "error": f"❌ Услуга '{service_name}' не найдена. Доступные услуги:\n{services_list}"
-            }
-
-        params["service_name"] = corrected_service
-
-        return {"params": params}
-
-    async def _suggest_datetime_format(self) -> str:
-        """Возвращает подсказку о формате даты и времени"""
-        from datetime import datetime, timedelta
-
-        today = datetime.now()
-        tomorrow = today + timedelta(days=1)
-
-        return f"""
-📅 Подсказка по формату:
-- Сегодня: {today.strftime('%Y-%m-%d')}
-- Завтра: {tomorrow.strftime('%Y-%m-%d')}  
-- Пример времени: 14:30, 09:00, 18:45
-
-Пожалуйста, укажите дату и время в правильном формате!
-"""
-
-    async def _process_general_message(self, user_id: int, user_message: str) -> Dict[str, Any]:
-        """Обработка общих сообщений"""
-        response = self.llm.chat([{"role": "user", "content": user_message}])
-        self.db.save_conversation(user_id, response["text"], True, "response")
-        return response
+        # Ограничиваем размер
+        if len(self.conversation_context[user_id]) > 10:
+            self.conversation_context[user_id] = self.conversation_context[user_id][-10:]

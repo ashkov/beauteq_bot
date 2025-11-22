@@ -127,8 +127,9 @@ class OllamaClient:
                     required = " (обязательный)" if param_info.get('required', False) else " (опциональный)"
                     functions_text += f"  - {param_name}: {param_info['type']}{required} - {param_info.get('description', '')}\n"
 
-        prompt = f"""
-    {config.SYSTEM_PROMPT}
+
+
+        prompt = f"""{config.SYSTEM_PROMPT}
 
     {masters_text}
 
@@ -146,7 +147,7 @@ class OllamaClient:
     - НЕ вызывай функции, если не все обязательные параметры введены
     - Если данных недостаточно - спроси уточняющие вопросы текстом
     ФОРМАТ ОТВЕТА:
-    Если нужно вызвать функцию, отвечай ТОЛЬКО в формате:
+    Если нужно вызвать функцию, отвечай ТОЛЬКО в формате (корневой тэг всегда - function_call! Открывающий и закрывающий тэги - обязательны!):
     <function_call>
     {{
         "function": "имя_функции",
@@ -156,8 +157,6 @@ class OllamaClient:
         }}
     }}
     </function_call>
-    Обрати внимание! корневой тег у функции это <function_call>. Не надо его исправлять, 
-    и подставлять вместо строки function_call название функции
     
     НИКОГДА не показывай клиенту формат вызова функций!
     """
@@ -186,11 +185,12 @@ class OllamaClient:
 
         # Форматируем системный промпт с функциями
         system_prompt = self._build_system_prompt(tools)
-        logger.info(system_prompt)
+        # logger.info(system_prompt)
 
         # Собираем все сообщения включая системный промпт
         all_messages = [{"role": "system", "content": system_prompt}]
         all_messages.extend(messages)
+        logger.info(all_messages)
 
         try:
             response = requests.post(

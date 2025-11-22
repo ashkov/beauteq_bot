@@ -130,6 +130,32 @@ class Database:
                 (user_id, message, is_bot, intent)
             )
 
+    def load_conversation(self, user_id: int, limit: int = 10) -> List[Dict[str, str]]:
+        """Получает историю диалога пользователя в формате для LLM"""
+
+        # Получаем последние сообщения из БД
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT message, is_bot, created_at 
+                FROM conversations 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC 
+                LIMIT ?
+            """, (user_id, limit * 2))  # Берем в 2 раза больше, чтобы пары хватило
+
+            rows = cursor.fetchall()
+
+        # Преобразуем в формат для LLM
+        messages = []
+        for row in reversed(rows):  # В хронологическом порядке (от старых к новым)
+            role = "assistant" if row['is_bot'] else "user"
+            messages.append({
+                "role": role,
+                "content": row['message']
+            })
+
+        return messages
     def get_available_masters(self, specialization: str = None) -> List[Dict]:
         """Получить список мастеров с улучшенным поиском"""
         with sqlite3.connect(self.db_path) as conn:

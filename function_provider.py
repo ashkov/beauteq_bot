@@ -93,3 +93,22 @@ class FunctionProvider:
             "time": time,
             "price": service['price']
         }
+
+    def get_user_appointments(self, user_id: int) -> List[Dict]:
+        """Получить записи пользователя
+
+        Args:
+            user_id: ID пользователя в системе
+        """
+        return self.db.get_user_appointments(user_id)
+
+    # Или если нужно по имени клиента:
+    def get_appointments_by_client_name(self, client_name: str) -> List[Dict]:
+        """Получить записи по имени клиента
+
+        Args:
+            client_name: имя клиента для поиска записей
+        """
+        # Эта функция сложнее - нужно искать по имени в БД
+        # Пока лучше использовать get_user_appointments
+        return []

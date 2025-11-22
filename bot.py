@@ -1,12 +1,13 @@
 import logging
+
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+from booking_system import BookingSystem
 from config import config
 from database import Database
-from booking_system import BookingSystem
-from ollama_client import OllamaClient
 from message_processor import MessageProcessor
-import json
+from ollama_client import OllamaClient
 
 # Настройка логирования
 logging.basicConfig(
@@ -74,17 +75,24 @@ class BeauteqBot:
         try:
             # Используем существующий processor
             response = await self.processor.process_message(
-                user.id, 
-                user.first_name, 
+                user.id,
+                user.first_name,
                 user_message
             )
 
             # Отправляем ответ
             if response.get("type") == "text":
-                await update.message.reply_text(
-                    response["text"], 
-                    parse_mode='Markdown' if '*' in response["text"] else None
-                )
+                try:
+                    await update.message.reply_text(
+                        response["text"],
+                        parse_mode='Markdown' if '*' in response["text"] else None
+                    )
+                except Exception as e:
+                    await update.message.reply_text(
+                        response["text"],
+                    )
+
+
 
         except Exception as e:
             logger.error(f"Error handling message: {e}")
