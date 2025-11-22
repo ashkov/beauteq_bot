@@ -17,7 +17,8 @@ class SimpleRAG:
                     id INTEGER PRIMARY KEY,
                     category TEXT,
                     keywords TEXT,  
-                    content TEXT    
+                    content TEXT,
+                    UNIQUE(category)  
                 )
             """)
             self._seed_data(conn)
@@ -32,8 +33,11 @@ class SimpleRAG:
             },
             {
                 "category": "дети",
-                "keywords": "ребенок дети детский малыш",
-                "content": "Да, у нас есть детская зона с игрушками и няней на 2 часа бесплатно для клиентов салона"
+                "keywords": "ребенок ребенка дети детский малыш",
+                "content": (
+                    "Да, у нас есть детская зона с игрушками и няней на 2 часа бесплатно для клиентов салона. "
+                    "Записываться в нее не надо, она предоставляется на время посещения салона. "
+                )
             },
             {
                 "category": "парковка",
@@ -54,7 +58,7 @@ class SimpleRAG:
 
         for item in knowledge:
             conn.execute(
-                "INSERT OR IGNORE INTO knowledge (category, keywords, content) VALUES (?, ?, ?)",
+                "INSERT OR REPlACE INTO knowledge (category, keywords, content) VALUES (?, ?, ?)",
                 (item["category"], item["keywords"], item["content"])
             )
 
