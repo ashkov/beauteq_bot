@@ -1,41 +1,110 @@
 import logging
 from typing import Dict, Any, List
-from database import Database
-from booking_system import BookingSystem
-from ollama_client import OllamaClient
 
+from database import Database
+from ollama_client import OllamaClient
+from state_machine import StateMachine, BotState
+from simple_rag import SimpleRAG
 logger = logging.getLogger(__name__)
 
 
 class MessageProcessor:
     def __init__(self):
         self.db = Database()
-        self.booking_system = BookingSystem()
         self.llm = OllamaClient()
+        self.rag = SimpleRAG()
+        self.state_machine = StateMachine()
 
     async def process_message(self, user_id: int, user_name: str, user_message: str) -> Dict[str, Any]:
-        """Основной метод обработки сообщений"""
-
-        # Сохраняем сообщение пользователя
-        self.db.save_user(user_id, "", user_name)
         self.db.save_conversation(user_id, user_message, False, "message")
 
-        try:
-            # Определяем, относится ли сообщение к бронированию
-            is_booking_related = any(word in user_message.lower() for word in [
-                'записаться', 'запись', 'бронь', 'стрижк', 'мастер', 'услуг',
-                'стоит', 'цена', 'цен', 'price', 'cost', 'available', 'время',
-                'свободн', 'расписан', 'запишите', 'хочу записаться'
-            ])
+        # 1. Пробуем State Machine
+        state_result = self.state_machine.process_message(user_id, user_message, self.db)
 
-            if is_booking_related:
-                return await self._process_booking_message(user_id, user_name, user_message)
+        if state_result.get("handled"):
+            logger.info(f"State machine handled message for user {user_id}")
+            self.db.save_conversation(user_id, state_result["text"], True, "state_response")
+            return {"type": "text", "text": state_result["text"]}
+
+        # 2. Если не обработано State Machine - используем RAG + LLM
+        logger.info(f"Using RAG+LLM for user {user_id}")
+        rag_results = self.rag.search(user_message)
+        messages = self._build_messages(user_id, user_message, rag_results)
+        response = self.llm.chat(messages, self.llm.available_functions)
+
+        if response.get("type") == "text":
+            self.db.save_conversation(user_id, response["text"], True, "response")
+
+        return response
+
+    def _build_messages(self, user_id: int, user_message: str, rag_results: List[str]) -> List[Dict]:
+        """Строим сообщения с знаниями из RAG"""
+        messages = []
+
+        # Добавляем знания из RAG если есть
+        if rag_results:
+            knowledge_text = "📚 Информация для ответа:\n" + "\n".join(f"• {item}" for item in rag_results)
+            messages.append({"role": "system", "content": knowledge_text})
+
+        messages.append({"role": "user", "content": user_message})
+        return messages
+    def _format_function_result(self, function_name: str, result: Any, user_id: int) -> Dict[str, Any]:
+        """Форматирует результат функции для пользователя"""
+
+        if function_name == "get_available_masters":
+            if result:
+                masters_text = "👩‍💼 *Доступные мастера:*\n\n"
+                for master in result:
+                    masters_text += f"*{master['name']}* - {master['specialization']}\n"
+                self.db.save_conversation(user_id, masters_text, True, "masters_list")
+                return {"type": "text", "text": masters_text}
             else:
-                return await self._process_general_message(user_id, user_message)
+                text = "К сожалению, сейчас нет доступных мастеров."
+                self.db.save_conversation(user_id, text, True, "masters_list")
+                return {"type": "text", "text": text}
 
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            return {"type": "text", "text": "Извините, произошла ошибка. Пожалуйста, попробуйте позже."}
+        elif function_name == "get_services":
+            if result:
+                services_text = "💇 *Наши услуги и цены:*\n\n"
+                for service in result:
+                    services_text += f"*{service['name']}* - {service['price']} руб. ({service['duration_minutes']} мин.)\n"
+                self.db.save_conversation(user_id, services_text, True, "services_list")
+                return {"type": "text", "text": services_text}
+            else:
+                text = "К сожалению, услуги не найдены."
+                self.db.save_conversation(user_id, text, True, "services_list")
+                return {"type": "text", "text": text}
+
+        elif function_name == "check_availability":
+            if result.get("available"):
+                text = f"✅ {result['master']} свободен в это время!"
+            else:
+                text = f"❌ {result['reason']}"
+            self.db.save_conversation(user_id, text, True, "availability_check")
+            return {"type": "text", "text": text}
+
+        elif function_name == "create_appointment":
+            if result.get("success"):
+                appointment_text = f"""
+✅ *Запись успешно создана!*
+
+*Мастер:* {result['master']}
+*Услуга:* {result['service']}  
+*Дата:* {result['date']}
+*Время:* {result['time']}
+*Стоимость:* {result['price']} руб.
+
+Ждем вас в салоне Beauteq! 🎉
+                """
+                self.db.save_conversation(user_id, appointment_text, True, "appointment_created")
+                return {"type": "text", "text": appointment_text}
+            else:
+                error_text = f"❌ Не удалось создать запись: {result.get('error', 'Неизвестная ошибка')}"
+                self.db.save_conversation(user_id, error_text, True, "appointment_error")
+                return {"type": "text", "text": error_text}
+
+        # Для других функций возвращаем как есть
+        return {"type": "text", "text": str(result)}
 
     async def _process_booking_message(self, user_id: int, user_name: str, user_message: str) -> Dict[str, Any]:
         """Обработка сообщений, связанных с бронированием"""

@@ -21,6 +21,7 @@ class BeauteqBot:
         self.db = Database()
         self.booking_system = BookingSystem()
         self.llm = OllamaClient()
+        self.processor = MessageProcessor()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -63,25 +64,33 @@ class BeauteqBot:
         user = update.effective_user
         user_message = update.message.text
 
+        # Сохраняем сообщение пользователя
+        self.db.save_user(user.id, user.username, user.first_name)
+        self.db.save_conversation(user.id, user_message, False, "message")
+
         # Показываем индикатор "печатает"
         await update.message.chat.send_action(action="typing")
 
-        # Создаем процессор сообщений
-        processor = MessageProcessor()
-
-        # Обрабатываем сообщение
-        response = await processor.process_message(
-            user.id,
-            user.first_name,
-            user_message
-        )
-
-        # Отправляем ответ
-        if response.get("type") == "text":
-            await update.message.reply_text(
-                response["text"],
-                parse_mode='Markdown' if '*' in response["text"] else None
+        try:
+            # Используем существующий processor
+            response = await self.processor.process_message(
+                user.id, 
+                user.first_name, 
+                user_message
             )
+
+            # Отправляем ответ
+            if response.get("type") == "text":
+                await update.message.reply_text(
+                    response["text"], 
+                    parse_mode='Markdown' if '*' in response["text"] else None
+                )
+
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+            error_text = "Извините, произошла ошибка. Пожалуйста, попробуйте позже."
+            await update.message.reply_text(error_text)
+            self.db.save_conversation(user.id, error_text, True, "error")
 
     async def show_services(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать услуги и цены"""
